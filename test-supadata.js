@@ -1,6 +1,7 @@
 const fetch = require('node-fetch');
 
-const SUPADATA_API_KEY = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6IjEifQ.eyJpc3MiOiJuYWRsZXMiLCJpYXQiOiIxNzQ0NjI1MDAxIiwicHVycG9zZSI6ImFwaV9hdXRoZW50aWNhdGlvbiIsInN1YiI6IjhiZmQ2ZDZjNTEzMzQzNGJhOWQxZTIzZDIxY2U3NWU4In0.w3UZsw6FxkgDkOxL762skwus1DZxJsLiv8rYT3Zn1zE';
+// 例: process.env.SUPADATA_API_KEY
+const SUPADATA_API_KEY = 'YOUR_API_KEY_HERE';
 const VIDEO_ID = 'dQw4w9WgXcQ'; // Rick Astley - Never Gonna Give You Up
 
 async function fetchTranscriptFromSupadata(videoId, lang) {

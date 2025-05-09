@@ -31,8 +31,8 @@ export class VideoDataService {
   private static RETRY_DELAY = 1000; // 1 second
   private static OUTPUT_TOKENS = 3000;
   private static MAX_TOKENS = 128000 - VideoDataService.OUTPUT_TOKENS;  // 128k token limit
-  private static SUPADATA_API_KEY = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6IjEifQ.eyJpc3MiOiJuYWRsZXMiLCJpYXQiOiIxNzQ0NjI1MDAxIiwicHVycG9zZSI6ImFwaV9hdXRoZW50aWNhdGlvbiIsInN1YiI6IjhiZmQ2ZDZjNTEzMzQzNGJhOWQxZTIzZDIxY2U3NWU4In0.w3UZsw6FxkgDkOxL762skwus1DZxJsLiv8rYT3Zn1zE';
   private static LANGUAGE_PRIORITY = ['ja', 'en']; // 日本語優先、次に英語
+  
 
   private videoDataCache = new Map<string, CacheEntry>();
   private videoDataRequests = new Map<string, Promise<VideoData>>();
@@ -81,7 +81,7 @@ export class VideoDataService {
       const options = {
         method: 'GET',
         headers: {
-          'x-api-key': VideoDataService.SUPADATA_API_KEY
+          'x-api-key': 'YOUR_API_KEY_HERE' // 実際の実装では環境変数から取得
         }
       };
       
