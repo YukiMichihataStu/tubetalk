@@ -1,5 +1,4 @@
 import { VideoDataError, NoCaptionsVideoDataError, DataAccessVideoDataError, TokenLimitExceededError } from '../errors/VideoDataError';
-import { getEncoding } from 'js-tiktoken';
 
 interface VideoData {
   videoId: string;
@@ -9,10 +8,16 @@ interface VideoData {
   timestamp: number;
 }
 
-interface CaptionTrack {
-  baseUrl: string;
-  languageCode: string;
-  kind: string;
+
+interface SupadataTranscriptResponse {
+  content: string | Array<{
+    text: string;
+    offset: number;
+    duration: number;
+    lang: string;
+  }>;
+  lang: string;
+  availableLangs: string[];
 }
 
 interface CacheEntry {
@@ -26,6 +31,8 @@ export class VideoDataService {
   private static RETRY_DELAY = 1000; // 1 second
   private static OUTPUT_TOKENS = 3000;
   private static MAX_TOKENS = 128000 - VideoDataService.OUTPUT_TOKENS;  // 128k token limit
+  private static SUPADATA_API_KEY = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6IjEifQ.eyJpc3MiOiJuYWRsZXMiLCJpYXQiOiIxNzQ0NjI1MDAxIiwicHVycG9zZSI6ImFwaV9hdXRoZW50aWNhdGlvbiIsInN1YiI6IjhiZmQ2ZDZjNTEzMzQzNGJhOWQxZTIzZDIxY2U3NWU4In0.w3UZsw6FxkgDkOxL762skwus1DZxJsLiv8rYT3Zn1zE';
+  private static LANGUAGE_PRIORITY = ['ja', 'en']; // 日本語優先、次に英語
 
   private videoDataCache = new Map<string, CacheEntry>();
   private videoDataRequests = new Map<string, Promise<VideoData>>();
@@ -47,17 +54,6 @@ export class VideoDataService {
     });
   }
 
-  private compareTracks(track1: CaptionTrack, track2: CaptionTrack): number {
-    const langCode1 = track1.languageCode;
-    const langCode2 = track2.languageCode;
-
-    if (langCode1 === 'en' && langCode2 !== 'en') return -1;
-    if (langCode1 !== 'en' && langCode2 === 'en') return 1;
-    if (track1.kind !== 'asr' && track2.kind === 'asr') return -1;
-    if (track1.kind === 'asr' && track2.kind !== 'asr') return 1;
-    return 0;
-  }
-
   private formatTime(ms: number): string {
     const totalSeconds = Math.floor(ms / 1000);
     const hours = Math.floor(totalSeconds / 3600);
@@ -69,69 +65,101 @@ export class VideoDataService {
     }
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   }
-
-  private async fetchTranscriptWithRetry(baseUrl: string, retryCount = 0): Promise<any> {
+  
+  private async fetchTranscriptFromSupadata(videoId: string, lang?: string, retryCount = 0): Promise<SupadataTranscriptResponse> {
     try {
-      console.log(`[VideoDataService] Fetching transcript, attempt ${retryCount + 1}`);
-      const transcriptResponse = await fetch(baseUrl + '&fmt=json3');
-      if (!transcriptResponse.ok) {
-        throw new Error(`HTTP error! status: ${transcriptResponse.status}`);
+      console.log(`[VideoDataService] Fetching transcript from Supadata API for: ${videoId}, language: ${lang || 'default'}, attempt ${retryCount + 1}`);
+      
+      let apiUrl = `https://api.supadata.ai/v1/youtube/transcript?videoId=${videoId}`;
+      
+      if (lang) {
+        apiUrl += `&lang=${lang}`;
       }
-      console.log(`[VideoDataService] Transcript fetch successful`);
-      return await transcriptResponse.json();
+      
+      apiUrl += '&text=false';
+      
+      const options = {
+        method: 'GET',
+        headers: {
+          'x-api-key': VideoDataService.SUPADATA_API_KEY
+        }
+      };
+      
+      const response = await fetch(apiUrl, options);
+      
+      if (!response.ok) {
+        throw new Error(`Supadata API error: ${response.status}`);
+      }
+      
+      console.log(`[VideoDataService] Supadata transcript fetch successful`);
+      return await response.json();
     } catch (error) {
       if (retryCount < VideoDataService.MAX_RETRIES) {
-        console.log(`[VideoDataService] Transcript fetch failed, retrying in ${VideoDataService.RETRY_DELAY}ms`);
+        console.log(`[VideoDataService] Supadata transcript fetch failed, retrying in ${VideoDataService.RETRY_DELAY}ms`);
         await new Promise(resolve => setTimeout(resolve, VideoDataService.RETRY_DELAY));
-        return this.fetchTranscriptWithRetry(baseUrl, retryCount + 1);
+        return this.fetchTranscriptFromSupadata(videoId, lang, retryCount + 1);
       }
       throw error;
     }
   }
 
   private async fetchTranscript(playerResponse: any): Promise<string> {
-    if (!playerResponse.captions?.playerCaptionsTracklistRenderer?.captionTracks) {
+    const videoId = playerResponse.videoDetails?.videoId;
+    if (!videoId) {
       throw new NoCaptionsVideoDataError();
     }
 
-    const tracks = playerResponse.captions.playerCaptionsTracklistRenderer.captionTracks;
-    if (!tracks || tracks.length === 0) {
-      throw new NoCaptionsVideoDataError();
-    }
-
-    tracks.sort(this.compareTracks);
-    console.log(`[VideoDataService] Selected caption track:`, {
-      languageCode: tracks[0].languageCode,
-      kind: tracks[0].kind
-    });
+    console.log(`[VideoDataService] Fetching transcript for video: ${videoId}`);
     
     try {
-      const transcript = await this.fetchTranscriptWithRetry(tracks[0].baseUrl);
-
-      if (!transcript.events) {
-        throw new DataAccessVideoDataError();
+      let transcriptData: SupadataTranscriptResponse | null = null;
+      let error: Error | null = null;
+      
+      try {
+        transcriptData = await this.fetchTranscriptFromSupadata(videoId);
+        console.log(`[VideoDataService] Got transcript with no language specified, lang: ${transcriptData.lang}`);
+      } catch (e) {
+        error = e as Error;
+        console.log(`[VideoDataService] Failed to get transcript with no language specified: ${error.message}`);
       }
-
-      const lines = transcript.events
-        .filter((event: any) => event.segs)
-        .map((event: any) => {
-          const startTimeMs = event.tStartMs || 0;
-          const startTime = this.formatTime(startTimeMs);
-          const text = event.segs
-            .map((seg: any) => seg.utf8)
-            .join('')
-            .trim();
-          return { startTime, text };
-        })
-        .filter((line: any) => line.text);
-
-      console.log(`[VideoDataService] Processed transcript lines:`, lines.length);
-      return lines.map((line: any) => `${line.startTime} - ${line.text}`).join('\n');
+      
+      if (!transcriptData) {
+        for (const lang of VideoDataService.LANGUAGE_PRIORITY) {
+          try {
+            transcriptData = await this.fetchTranscriptFromSupadata(videoId, lang);
+            console.log(`[VideoDataService] Got transcript with language: ${lang}`);
+            break;
+          } catch (e) {
+            error = e as Error;
+            console.log(`[VideoDataService] Failed to get transcript with language ${lang}: ${error.message}`);
+          }
+        }
+      }
+      
+      if (!transcriptData) {
+        throw error || new NoCaptionsVideoDataError();
+      }
+      
+      if (Array.isArray(transcriptData.content)) {
+        const lines = transcriptData.content.map((segment: any) => {
+          const startTime = this.formatTime(segment.offset);
+          return { startTime, text: segment.text.trim() };
+        }).filter((line: any) => line.text);
+        
+        console.log(`[VideoDataService] Processed transcript lines:`, lines.length);
+        return lines.map((line: any) => `${line.startTime} - ${line.text}`).join('\n');
+      } 
+      else if (typeof transcriptData.content === 'string') {
+        console.log(`[VideoDataService] Received plain text transcript without timestamps`);
+        return transcriptData.content;
+      }
+      
+      throw new DataAccessVideoDataError('Invalid transcript data format');
     } catch (error) {
       if (error instanceof VideoDataError) {
         throw error;
       }
-      throw new DataAccessVideoDataError();
+      throw new DataAccessVideoDataError(error instanceof Error ? error.message : 'Unknown error');
     }
   }
 
@@ -213,16 +241,7 @@ export class VideoDataService {
   }
 
   private countTokens(text: string): number {
-    try {
-      const enc = getEncoding("cl100k_base"); // Using cl100k_base as it's used by GPT-4 and most recent models
-      const tokens = enc.encode(text);
-      const count = tokens.length;
-      return count;
-    } catch (error) {
-      console.error('[VideoDataService] Error counting tokens:', error);
-      // Fallback to character-based estimation if tiktoken fails
-      return Math.ceil(text.length / 4);
-    }
+    return Math.ceil(text.length / 4);
   }
 
   private async checkTokenLimit(title: string, description: string, transcript: string): Promise<void> {
